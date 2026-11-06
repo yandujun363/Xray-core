@@ -77,6 +77,11 @@ func (c *fragmentConn) Write(p []byte) (n int, err error) {
 		if len(p) < recordLen {
 			return c.Conn.Write(p)
 		}
+		if c.config.SniMid {
+			if cut := sniMidCut(p[:recordLen]); cut > 5 && cut < recordLen {
+				return c.writeSniSplit(p, recordLen, cut)
+			}
+		}
 		data := p[5:recordLen]
 		buff := make([]byte, 2048)
 		var hello []byte
@@ -154,4 +159,99 @@ func (c *fragmentConn) Write(p []byte) (n int, err error) {
 			return from, nil
 		}
 	}
+}
+
+// sniMidCut returns the absolute offset inside record at which the ClientHello should be cut:
+// the middle of the server_name host name. It returns 0 when the record does not carry a
+// parseable SNI, in which case the caller falls back to length-based splitting.
+func sniMidCut(record []byte) int {
+	if len(record) < 44 || record[0] != 22 || record[5] != 1 {
+		return 0
+	}
+	helloEnd := 9 + (int(record[6])<<16 | int(record[7])<<8 | int(record[8]))
+	if helloEnd > len(record) || helloEnd < 44 {
+		return 0
+	}
+	p := 43
+	if p >= helloEnd {
+		return 0
+	}
+	p += 1 + int(record[p]) // session_id
+	if p+2 > helloEnd {
+		return 0
+	}
+	p += 2 + (int(record[p])<<8 | int(record[p+1])) // cipher_suites
+	if p >= helloEnd {
+		return 0
+	}
+	p += 1 + int(record[p]) // compression_methods
+	if p+2 > helloEnd {
+		return 0
+	}
+	p += 2 // extensions length
+	extEnd := p + (int(record[p-2])<<8 | int(record[p-1]))
+	if extEnd > helloEnd {
+		return 0
+	}
+	for p+4 <= extEnd {
+		kind := int(record[p])<<8 | int(record[p+1])
+		l := int(record[p+2])<<8 | int(record[p+3])
+		p += 4
+		if p+l > extEnd {
+			return 0
+		}
+		if kind == 0 && l >= 5 {
+			q := p + 2
+			listEnd := q + (int(record[p])<<8 | int(record[p+1]))
+			for q+3 <= listEnd {
+				nameType := record[q]
+				n := int(record[q+1])<<8 | int(record[q+2])
+				q += 3
+				if q+n > listEnd {
+					return 0
+				}
+				if nameType == 0 && n >= 2 {
+					return q + n/2
+				}
+				q += n
+			}
+		}
+		p += l
+	}
+	return 0
+}
+
+// writeSniSplit emits the first ClientHello record as two records cut at cut, one write each, so
+// the first TCP segment ends inside the SNI host name.
+func (c *fragmentConn) writeSniSplit(p []byte, recordLen, cut int) (int, error) {
+	head := make([]byte, cut)
+	copy(head, p[:cut])
+	head[3] = byte((cut - 5) >> 8)
+	head[4] = byte(cut - 5)
+
+	tail := make([]byte, 5+recordLen-cut)
+	copy(tail, p[:3])
+	tail[3] = byte((recordLen - cut) >> 8)
+	tail[4] = byte(recordLen - cut)
+	copy(tail[5:], p[cut:recordLen])
+
+	if _, err := c.Conn.Write(head); err != nil {
+		return 0, err
+	}
+	if len(c.config.DelaysMax) > 0 {
+		delayMin, delayMax := c.delayForSegment(0)
+		if delayMax > 0 {
+			time.Sleep(time.Duration(crypto.RandBetween(delayMin, delayMax)) * time.Millisecond)
+		}
+	}
+	if _, err := c.Conn.Write(tail); err != nil {
+		return recordLen, err
+	}
+	if len(p) > recordLen {
+		n, err := c.Conn.Write(p[recordLen:])
+		if err != nil {
+			return recordLen + n, err
+		}
+	}
+	return len(p), nil
 }

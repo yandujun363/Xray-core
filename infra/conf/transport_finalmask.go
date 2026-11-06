@@ -266,6 +266,9 @@ type FragmentMask struct {
 	Lengths  []Int32Range `json:"lengths"`
 	Delays   []Int32Range `json:"delays"`
 	MaxSplit Int32Range   `json:"maxSplit"`
+	// SniMid cuts the first ClientHello record in the middle of the SNI host name instead of at
+	// length-based offsets, so the first TCP segment ends inside the domain.
+	SniMid bool `json:"sniMid"`
 }
 
 func (c *FragmentMask) Build() (proto.Message, error) {
@@ -290,6 +293,13 @@ func (c *FragmentMask) Build() (proto.Message, error) {
 		}
 	}
 
+	// SniMid implies "tlshello": only the first ClientHello record is shaped.
+	if c.SniMid {
+		config.PacketsFrom = 0
+		config.PacketsTo = 1
+		config.SniMid = true
+	}
+
 	if len(c.Lengths) > 0 {
 		for _, r := range c.Lengths {
 			config.LengthsMin = append(config.LengthsMin, int64(r.From))
@@ -301,7 +311,11 @@ func (c *FragmentMask) Build() (proto.Message, error) {
 	}
 
 	if config.LengthsMin[len(config.LengthsMin)-1] == 0 {
-		return nil, errors.New("last lengths entry min can't be 0")
+		if !c.SniMid {
+			return nil, errors.New("last lengths entry min can't be 0")
+		}
+		config.LengthsMin[len(config.LengthsMin)-1] = 1
+		config.LengthsMax[len(config.LengthsMax)-1] = 1
 	}
 
 	if len(c.Delays) > 0 {
