@@ -269,6 +269,11 @@ type FragmentMask struct {
 	// SniMid cuts the first ClientHello record in the middle of the SNI host name instead of at
 	// length-based offsets, so the first TCP segment ends inside the domain.
 	SniMid bool `json:"sniMid"`
+	// Layout names one of the ClientHello layouts ported from MistSail (plain, record-2, tcp-mid,
+	// record-misalign, record-misalign-b, record-bytes, record-mid, record-mid-delay,
+	// tcp-mid-delay, record-zero4). It implies "tlshello"; the layout's own pacing is used unless
+	// "delays" is set.
+	Layout string `json:"layout"`
 }
 
 func (c *FragmentMask) Build() (proto.Message, error) {
@@ -293,11 +298,15 @@ func (c *FragmentMask) Build() (proto.Message, error) {
 		}
 	}
 
-	// SniMid implies "tlshello": only the first ClientHello record is shaped.
-	if c.SniMid {
+	// SniMid and Layout imply "tlshello": only the first ClientHello record is shaped.
+	if c.SniMid || c.Layout != "" {
 		config.PacketsFrom = 0
 		config.PacketsTo = 1
-		config.SniMid = true
+		config.SniMid = c.SniMid
+		config.Layout = c.Layout
+		if c.Layout != "" && !fragment.KnownLayout(c.Layout) {
+			return nil, errors.New("unknown fragment layout: ", c.Layout)
+		}
 	}
 
 	if len(c.Lengths) > 0 {
@@ -311,21 +320,26 @@ func (c *FragmentMask) Build() (proto.Message, error) {
 	}
 
 	if config.LengthsMin[len(config.LengthsMin)-1] == 0 {
-		if !c.SniMid {
+		if !c.SniMid && c.Layout == "" {
 			return nil, errors.New("last lengths entry min can't be 0")
 		}
 		config.LengthsMin[len(config.LengthsMin)-1] = 1
 		config.LengthsMax[len(config.LengthsMax)-1] = 1
 	}
 
-	if len(c.Delays) > 0 {
+	switch {
+	case len(c.Delays) > 0:
 		for _, r := range c.Delays {
 			config.DelaysMin = append(config.DelaysMin, int64(r.From))
 			config.DelaysMax = append(config.DelaysMax, int64(r.To))
 		}
-	} else {
+	case c.Delay.From != 0 || c.Delay.To != 0:
 		config.DelaysMin = append(config.DelaysMin, int64(c.Delay.From))
 		config.DelaysMax = append(config.DelaysMax, int64(c.Delay.To))
+	case !c.SniMid && c.Layout == "":
+		// Length-based splitting without an explicit delay keeps the old "single write" default.
+		config.DelaysMin = append(config.DelaysMin, 0)
+		config.DelaysMax = append(config.DelaysMax, 0)
 	}
 
 	config.MaxSplitMin = int64(c.MaxSplit.From)

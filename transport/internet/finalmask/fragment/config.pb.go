@@ -32,6 +32,7 @@ type Config struct {
 	DelaysMin     []int64                `protobuf:"varint,11,rep,packed,name=delays_min,json=delaysMin,proto3" json:"delays_min,omitempty"`
 	DelaysMax     []int64                `protobuf:"varint,12,rep,packed,name=delays_max,json=delaysMax,proto3" json:"delays_max,omitempty"`
 	SniMid        bool                   `protobuf:"varint,13,opt,name=sni_mid,json=sniMid,proto3" json:"sni_mid,omitempty"`
+	Layout        string                 `protobuf:"bytes,14,opt,name=layout,proto3" json:"layout,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -129,11 +130,18 @@ func (x *Config) GetSniMid() bool {
 	return false
 }
 
+func (x *Config) GetLayout() string {
+	if x != nil {
+		return x.Layout
+	}
+	return ""
+}
+
 var File_transport_internet_finalmask_fragment_config_proto protoreflect.FileDescriptor
 
 const file_transport_internet_finalmask_fragment_config_proto_rawDesc = "" +
 	"\n" +
-	"2transport/internet/finalmask/fragment/config.proto\x12*xray.transport.internet.finalmask.fragment\"\xab\x02\n" +
+	"2transport/internet/finalmask/fragment/config.proto\x12*xray.transport.internet.finalmask.fragment\"\xc3\x02\n" +
 	"\x06Config\x12!\n" +
 	"\fpackets_from\x18\x01 \x01(\x03R\vpacketsFrom\x12\x1d\n" +
 	"\n" +
@@ -149,7 +157,8 @@ const file_transport_internet_finalmask_fragment_config_proto_rawDesc = "" +
 	"delays_min\x18\v \x03(\x03R\tdelaysMin\x12\x1d\n" +
 	"\n" +
 	"delays_max\x18\f \x03(\x03R\tdelaysMax\x12\x17\n" +
-	"\asni_mid\x18\r \x01(\bR\x06sniMidB\xa0\x01\n" +
+	"\asni_mid\x18\r \x01(\bR\x06sniMid\x12\x16\n" +
+	"\x06layout\x18\x0e \x01(\tR\x06layoutB\xa0\x01\n" +
 	".com.xray.transport.internet.finalmask.fragmentP\x01Z?github.com/xtls/xray-core/transport/internet/finalmask/fragment\xaa\x02*Xray.Transport.Internet.Finalmask.Fragmentb\x06proto3"
 
 var (

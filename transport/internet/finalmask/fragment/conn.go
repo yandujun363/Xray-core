@@ -77,6 +77,18 @@ func (c *fragmentConn) Write(p []byte) (n int, err error) {
 		if len(p) < recordLen {
 			return c.Conn.Write(p)
 		}
+		if c.config.Layout != "" {
+			if start, end, ok := sniNameRange(p[:recordLen]); ok && end-start >= 2 {
+				gap := layoutDefaultGap(c.config.Layout)
+				if len(c.config.DelaysMax) > 0 {
+					gap = crypto.RandBetween(c.config.DelaysMin[0], c.config.DelaysMax[0])
+					if gap < 0 {
+						gap = 0
+					}
+				}
+				return c.writeShaped(p, recordLen, shapeHello(p[:recordLen], start, end, c.config.Layout, gap))
+			}
+		}
 		if c.config.SniMid {
 			if cut := sniMidCut(p[:recordLen]); cut > 5 && cut < recordLen {
 				return c.writeSniSplit(p, recordLen, cut)
@@ -165,40 +177,50 @@ func (c *fragmentConn) Write(p []byte) (n int, err error) {
 // the middle of the server_name host name. It returns 0 when the record does not carry a
 // parseable SNI, in which case the caller falls back to length-based splitting.
 func sniMidCut(record []byte) int {
-	if len(record) < 44 || record[0] != 22 || record[5] != 1 {
+	start, end, ok := sniNameRange(record)
+	if !ok || end-start < 2 {
 		return 0
+	}
+	return start + (end-start)/2
+}
+
+// sniNameRange returns the absolute [start,end) of the server_name host name inside a TLS
+// handshake record, header included.
+func sniNameRange(record []byte) (int, int, bool) {
+	if len(record) < 44 || record[0] != 22 || record[5] != 1 {
+		return 0, 0, false
 	}
 	helloEnd := 9 + (int(record[6])<<16 | int(record[7])<<8 | int(record[8]))
 	if helloEnd > len(record) || helloEnd < 44 {
-		return 0
+		return 0, 0, false
 	}
 	p := 43
 	if p >= helloEnd {
-		return 0
+		return 0, 0, false
 	}
 	p += 1 + int(record[p]) // session_id
 	if p+2 > helloEnd {
-		return 0
+		return 0, 0, false
 	}
 	p += 2 + (int(record[p])<<8 | int(record[p+1])) // cipher_suites
 	if p >= helloEnd {
-		return 0
+		return 0, 0, false
 	}
 	p += 1 + int(record[p]) // compression_methods
 	if p+2 > helloEnd {
-		return 0
+		return 0, 0, false
 	}
 	p += 2 // extensions length
 	extEnd := p + (int(record[p-2])<<8 | int(record[p-1]))
 	if extEnd > helloEnd {
-		return 0
+		return 0, 0, false
 	}
 	for p+4 <= extEnd {
 		kind := int(record[p])<<8 | int(record[p+1])
 		l := int(record[p+2])<<8 | int(record[p+3])
 		p += 4
 		if p+l > extEnd {
-			return 0
+			return 0, 0, false
 		}
 		if kind == 0 && l >= 5 {
 			q := p + 2
@@ -208,17 +230,17 @@ func sniMidCut(record []byte) int {
 				n := int(record[q+1])<<8 | int(record[q+2])
 				q += 3
 				if q+n > listEnd {
-					return 0
+					return 0, 0, false
 				}
 				if nameType == 0 && n >= 2 {
-					return q + n/2
+					return q, q + n, true
 				}
 				q += n
 			}
 		}
 		p += l
 	}
-	return 0
+	return 0, 0, false
 }
 
 // writeSniSplit emits the first ClientHello record as two records cut at cut, one write each, so
@@ -251,6 +273,25 @@ func (c *fragmentConn) writeSniSplit(p []byte, recordLen, cut int) (int, error) 
 		n, err := c.Conn.Write(p[recordLen:])
 		if err != nil {
 			return recordLen + n, err
+		}
+	}
+	return len(p), nil
+}
+
+// writeShaped emits the exact write sequence produced by shapeHello, then any bytes that followed
+// the shaped record.
+func (c *fragmentConn) writeShaped(p []byte, recordLen int, writes []helloWrite) (int, error) {
+	for _, w := range writes {
+		if _, err := c.Conn.Write(w.data); err != nil {
+			return 0, err
+		}
+		if w.delay > 0 {
+			time.Sleep(time.Duration(w.delay) * time.Millisecond)
+		}
+	}
+	if len(p) > recordLen {
+		if _, err := c.Conn.Write(p[recordLen:]); err != nil {
+			return recordLen, err
 		}
 	}
 	return len(p), nil

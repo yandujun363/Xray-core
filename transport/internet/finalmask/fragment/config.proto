@@ -16,4 +16,5 @@ message Config {
   repeated int64 delays_min = 11;
   repeated int64 delays_max = 12;
   bool sni_mid = 13;
+  string layout = 14;
 }
